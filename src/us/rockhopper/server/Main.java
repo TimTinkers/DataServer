@@ -2,6 +2,8 @@ package us.rockhopper.server;
 
 import java.nio.ByteBuffer;
 import java.sql.SQLException;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.json.simple.JSONArray;
 import org.json.simple.parser.JSONParser;
@@ -195,6 +197,9 @@ public class Main {
 				return (bytes <= (10 * 1024));
 			}
 
+			// A simple decision map for testing purposes.
+			Map<String, Integer> priorDecision = new HashMap<String, Integer>();
+
 			@Override
 			/**
 			 * This method executes when the server has received a reliable
@@ -212,30 +217,65 @@ public class Main {
 				// Parse this message for JSON String and sender.
 				// Normally you would read with LowEntry.readByteData(bytes)
 				String bufferString = LowEntry.bytesToStringUtf8(bytes);
-				System.out.println(System.currentTimeMillis() + " Stowing to RDS!");
+				if (bufferString.equals("Bot")) {
+					String botID = client.getRemoteAddress().toString();
+					System.out.println("Bot connected! " + botID);
 
-				// Parse the message into JSON format and take action.
-				DBConnect dbc;
-				try {
-					dbc = RDSInserter.getDatabaseConnection();
-					try {
-						JSONArray jsonArray = (JSONArray) parser.parse(bufferString);
-						String actionEntry = (String) jsonArray.get(jsonArray.size() - 1);
-						int action = Integer.parseInt(actionEntry.split(":")[1]);
-						for (int i = 0; i < jsonArray.size() - 1; i++) {
-							String row = tick + "," + (String) jsonArray.get(i) + "," + action;
-							System.out.println(row);
-							try {
-								RDSInserter.insertRow(dbc, row);
-							} catch (SQLException e) {
-								e.printStackTrace();
-							}
+					// This is a state captured by some bot.
+				} else if (bufferString.startsWith("bot:")) {
+					String botID = client.getRemoteAddress().toString();
+					System.out.println(botID + " - " + bufferString);
+
+					// Generate a simple series of decisions.
+					int decision = 0;
+					if (!priorDecision.containsKey(botID)) {
+						priorDecision.put(botID, 0);
+					} else {
+						int lastDecision = priorDecision.get(botID);
+						switch (lastDecision) {
+						case 0:
+							decision = 5;
+							break;
+						case 5:
+							decision = 7;
+							break;
+						case 7:
+							decision = 0;
+							break;
 						}
-					} catch (ParseException e) {
+						priorDecision.put(botID, decision);
+					}
+					client.sendMessage(LowEntry.stringToBytesUtf8(decision + ""));
+
+					// This is state from a player. Parse the message into JSON
+					// format and take action.
+				} else {
+					System.out.println(System.currentTimeMillis() + " Stowing to RDS!");
+					DBConnect dbc;
+					try {
+						dbc = RDSInserter.getDatabaseConnection();
+						try {
+							JSONArray jsonArray = (JSONArray) parser.parse(bufferString);
+							String actionEntry = (String) jsonArray.get(jsonArray.size() - 1);
+							int action = Integer.parseInt(actionEntry.split(":")[1].trim());
+							for (int i = 0; i < jsonArray.size() - 1; i++) {
+								String row = tick + "," + (String) jsonArray.get(i) + "," + action;
+								System.out.println(row);
+								try {
+									RDSInserter.insertRow(dbc, row);
+								} catch (SQLException e) {
+									System.out.println(System.currentTimeMillis() + " Failed to insert row.");
+									e.printStackTrace();
+								}
+							}
+						} catch (ParseException e) {
+							System.out.println(System.currentTimeMillis() + " Failed to parse state.");
+							e.printStackTrace();
+						}
+					} catch (SQLException e) {
+						System.out.println(System.currentTimeMillis() + " Failed to connect to database.");
 						e.printStackTrace();
 					}
-				} catch (SQLException e) {
-					e.printStackTrace();
 				}
 			}
 
