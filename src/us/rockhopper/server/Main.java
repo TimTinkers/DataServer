@@ -1,10 +1,13 @@
 package us.rockhopper.server;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 
+import org.apache.http.client.ClientProtocolException;
 import org.json.simple.JSONArray;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
@@ -15,7 +18,9 @@ import lowentry.ue4.classes.sockets.SocketServer;
 import lowentry.ue4.classes.sockets.SocketServerListener;
 import lowentry.ue4.library.LowEntry;
 import us.rockhopper.utility.DBConnect;
+import us.rockhopper.utility.GameState;
 import us.rockhopper.utility.RDSInserter;
+import us.rockhopper.utility.RESTClient;
 
 /**
  * The main class for the arrow-handling demo server.
@@ -198,7 +203,13 @@ public class Main {
 			}
 
 			// A simple decision map for testing purposes.
+			boolean DEBUG_BOT = false;
+			boolean OFFLINE = true;
 			Map<String, Integer> priorDecision = new HashMap<String, Integer>();
+			String ALICE = null;
+			String BOB = null;
+			String CAROL = null;
+			String DAN = null;
 
 			@Override
 			/**
@@ -219,62 +230,119 @@ public class Main {
 				String bufferString = LowEntry.bytesToStringUtf8(bytes);
 				if (bufferString.equals("Bot")) {
 					String botID = client.getRemoteAddress().toString();
-					System.out.println("Bot connected! " + botID);
+					boolean searching = true;
+					Random random = new Random();
+					String roleName = null;
+					while (searching) {
+						int role = random.nextInt(4);
+						if (role == 0 && ALICE == null) {
+							ALICE = botID;
+							searching = false;
+							roleName = "ALICE";
+							client.sendMessage(LowEntry.stringToBytesUtf8(-4 + ""));
+						} else if (role == 1 && BOB == null) {
+							BOB = botID;
+							searching = false;
+							roleName = "BOB";
+							client.sendMessage(LowEntry.stringToBytesUtf8(-3 + ""));
+						} else if (role == 2 && CAROL == null) {
+							CAROL = botID;
+							searching = false;
+							roleName = "CAROL";
+							client.sendMessage(LowEntry.stringToBytesUtf8(-2 + ""));
+						} else if (role == 3 && DAN == null) {
+							DAN = botID;
+							searching = false;
+							roleName = "DAN";
+							client.sendMessage(LowEntry.stringToBytesUtf8(-1 + ""));
+						}
+					}
+					System.out.println("Bot connected! " + botID + " as " + roleName);
 
 					// This is a state captured by some bot.
 				} else if (bufferString.startsWith("bot:")) {
 					String botID = client.getRemoteAddress().toString();
-					System.out.println(botID + " - " + bufferString);
+					String roleName = null;
+					if (botID.equals(ALICE)) {
+						roleName = "ALICE";
+					} else if (botID.equals(BOB)) {
+						roleName = "BOB";
+					} else if (botID.equals(CAROL)) {
+						roleName = "CAROL";
+					} else if (botID.equals(DAN)) {
+						roleName = "DAN";
+					}
 
 					// Generate a simple series of decisions.
 					int decision = 0;
-					if (!priorDecision.containsKey(botID)) {
-						priorDecision.put(botID, 0);
-					} else {
-						int lastDecision = priorDecision.get(botID);
-						switch (lastDecision) {
-						case 0:
-							decision = 5;
-							break;
-						case 5:
-							decision = 7;
-							break;
-						case 7:
-							decision = 0;
-							break;
+					if (DEBUG_BOT) {
+						if (!priorDecision.containsKey(botID)) {
+							priorDecision.put(botID, 0);
+						} else {
+							int lastDecision = priorDecision.get(botID);
+							switch (lastDecision) {
+							case 0:
+								decision = 5;
+								break;
+							case 5:
+								decision = 7;
+								break;
+							case 7:
+								decision = 0;
+								break;
+							}
+							priorDecision.put(botID, decision);
 						}
-						priorDecision.put(botID, decision);
+					} else {
+						GameState state = new GameState(bufferString.split(":")[1]);
+						try {
+							decision = RESTClient.getDecision(roleName, state).getBotCode();
+						} catch (ClientProtocolException e) {
+							e.printStackTrace();
+						} catch (IOException e) {
+							e.printStackTrace();
+						}
 					}
+					System.out.println(botID + " : " + roleName + " decided " + decision + " - " + bufferString);
 					client.sendMessage(LowEntry.stringToBytesUtf8(decision + ""));
+
+					// Respond to end-game signals to reset the server.
+				} else if (bufferString.equals("Erase")) {
+					ALICE = null;
+					BOB = null;
+					CAROL = null;
+					DAN = null;
 
 					// This is state from a player. Parse the message into JSON
 					// format and take action.
 				} else {
-					System.out.println(System.currentTimeMillis() + " Stowing to RDS!");
-					DBConnect dbc;
-					try {
-						dbc = RDSInserter.getDatabaseConnection();
+					if (!OFFLINE) {
+						System.out.println(System.currentTimeMillis() + " Stowing to RDS!");
+						DBConnect dbc;
 						try {
-							JSONArray jsonArray = (JSONArray) parser.parse(bufferString);
-							String actionEntry = (String) jsonArray.get(jsonArray.size() - 1);
-							int action = Integer.parseInt(actionEntry.split(":")[1].trim());
-							for (int i = 0; i < jsonArray.size() - 1; i++) {
-								String row = tick + "," + (String) jsonArray.get(i) + "," + action;
-								System.out.println(row);
-								try {
-									RDSInserter.insertRow(dbc, row);
-								} catch (SQLException e) {
-									System.out.println(System.currentTimeMillis() + " Failed to insert row.");
-									e.printStackTrace();
+							dbc = RDSInserter.getDatabaseConnection();
+							try {
+								JSONArray jsonArray = (JSONArray) parser.parse(bufferString);
+								String actionEntry = (String) jsonArray.get(jsonArray.size() - 1);
+								int action = Integer.parseInt(actionEntry.split(":")[1].trim());
+								for (int i = 0; i < jsonArray.size() - 1; i++) {
+									String row = tick + "," + (String) jsonArray.get(i) + "," + action;
+									System.out.println(row);
+									try {
+										RDSInserter.insertRow(dbc, row);
+									} catch (SQLException e) {
+										System.out.println(System.currentTimeMillis() + " Failed to insert row.");
+										e.printStackTrace();
+									}
 								}
+							} catch (ParseException e) {
+								System.out.println(System.currentTimeMillis() + " Failed to parse state.");
+								e.printStackTrace();
 							}
-						} catch (ParseException e) {
-							System.out.println(System.currentTimeMillis() + " Failed to parse state.");
+						} catch (SQLException e) {
+							System.out.println(System.currentTimeMillis() + " Failed to connect to database.");
 							e.printStackTrace();
 						}
-					} catch (SQLException e) {
-						System.out.println(System.currentTimeMillis() + " Failed to connect to database.");
-						e.printStackTrace();
 					}
 				}
 			}
